@@ -75,6 +75,28 @@ class RedisService {
   async invalidateUserPermissions(userId: number): Promise<void> {
     await this.del(`permissions:user:${userId}`);
   }
+
+  // Webhook-specific access caching
+  async cacheWebhookAccess(userId: number, webhookPath: string, hasAccess: boolean): Promise<void> {
+    const key = this.getWebhookAccessKey(userId, webhookPath);
+    await this.set(key, hasAccess, config.redis.cacheTTL);
+  }
+
+  async getCachedWebhookAccess(userId: number, webhookPath: string): Promise<boolean | null> {
+    const key = this.getWebhookAccessKey(userId, webhookPath);
+    return await this.get<boolean>(key);
+  }
+
+  async invalidateWebhookAccess(userId: number, webhookPath: string): Promise<void> {
+    const key = this.getWebhookAccessKey(userId, webhookPath);
+    await this.del(key);
+  }
+
+  private getWebhookAccessKey(userId: number, webhookPath: string): string {
+    // Normalize webhook path to remove leading/trailing slashes
+    const normalized = webhookPath.replace(/^\/+|\/+$/g, '');
+    return `webhook_access:${userId}:${normalized}`;
+  }
 }
 
 export const redisService = new RedisService();

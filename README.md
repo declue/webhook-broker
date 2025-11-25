@@ -11,7 +11,8 @@ GitHub 등의 웹훅을 중앙에서 받아 저장하고, 여러 클라이언트
 - ✅ **사용자별 진행 추적**: 각 사용자가 읽은 메시지 자동 추적
 - ✅ **과거 메시지 재생**: 새 사용자도 과거 메시지 조회 가능
 - ✅ **GitHub OAuth 인증**: GitHub 계정으로 로그인 및 권한 관리
-- ✅ **권한 기반 필터링**: GitHub 레포지토리 권한에 따라 메시지 필터링
+- ✅ **실시간 권한 검증**: Pull 시 GitHub API로 각 웹훅에 대한 접근 권한 실시간 체크
+- ✅ **권한 캐싱**: Redis로 권한 체크 결과 캐싱하여 성능 최적화
 
 ## 아키텍처
 
@@ -93,6 +94,53 @@ npm run dev
 ```
 
 서버가 `http://localhost:3000`에서 실행됩니다.
+
+## 권한 체크 동작 방식
+
+시스템은 다층 권한 검증 구조로 사용자가 접근 권한이 있는 웹훅만 조회할 수 있도록 보장합니다.
+
+### 1. 웹훅 경로 파싱
+웹훅 경로에서 레포지토리 정보를 추출합니다:
+```
+/webhook/github/myorg/myrepo -> { source: "github", owner: "myorg", repo: "myrepo" }
+```
+
+### 2. Pull 시 실시간 권한 검증
+메시지를 Pull할 때마다 각 웹훅에 대해 GitHub API로 권한을 확인합니다:
+
+```typescript
+// 1. Redis 캐시 확인
+let hasAccess = await redis.getCachedWebhookAccess(userId, webhookPath);
+
+// 2. 캐시 미스 시 GitHub API 호출
+if (hasAccess === null) {
+  hasAccess = await github.checkRepositoryAccess(accessToken, owner, repo);
+  await redis.cacheWebhookAccess(userId, webhookPath, hasAccess);
+}
+
+// 3. 권한이 있는 메시지만 반환
+if (hasAccess) {
+  return message;
+} else {
+  // 권한 없는 메시지는 자동 ack하고 건너뜀
+  await nats.ackMessage(message);
+}
+```
+
+### 3. 캐싱 전략
+- **캐시 키**: `webhook_access:{userId}:{webhookPath}`
+- **TTL**: 5분 (환경변수 `REDIS_CACHE_TTL`로 조정 가능)
+- **캐시 무효화**: 사용자 토큰 갱신 시 자동 무효화
+
+### 4. 성능 최적화
+- 첫 번째 요청: GitHub API 호출 (느림)
+- 이후 5분간: Redis 캐시 사용 (빠름)
+- 권한이 없는 웹훅은 자동으로 스킵되어 네트워크 대역폭 절약
+
+### 5. 보안 고려사항
+- 권한 변경 시 최대 5분 후 반영 (캐시 TTL)
+- 권한 없는 웹훅 접근 시도는 로그에 경고로 기록
+- 각 웹훅에 대해 개별적으로 권한 검증
 
 ## API 사용 가이드
 

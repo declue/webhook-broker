@@ -98,7 +98,46 @@ async function messagesRoutes(app: FastifyInstance) {
           }
         }
 
-        const messages = await natsService.pullMessages(consumerName, batch);
+        const rawMessages = await natsService.pullMessages(consumerName, batch);
+
+        // Filter messages by checking webhook access with GitHub API
+        const accessibleMessages = [];
+        for (const message of rawMessages) {
+          // Check cache first
+          let hasAccess = await redisService.getCachedWebhookAccess(
+            user.userId,
+            message.webhookPath
+          );
+
+          if (hasAccess === null) {
+            // Cache miss - check with GitHub API
+            hasAccess = await githubService.checkWebhookAccess(
+              dbUser.accessToken,
+              message.webhookPath
+            );
+
+            // Cache the result
+            await redisService.cacheWebhookAccess(
+              user.userId,
+              message.webhookPath,
+              hasAccess
+            );
+
+            app.log.debug(
+              `Checked webhook access for ${message.webhookPath}: ${hasAccess ? 'granted' : 'denied'}`
+            );
+          }
+
+          if (hasAccess) {
+            accessibleMessages.push(message);
+          } else {
+            // Acknowledge and skip unauthorized messages
+            await natsService.ackMessage(message);
+            app.log.warn(
+              `User ${user.userId} attempted to access unauthorized webhook: ${message.webhookPath}`
+            );
+          }
+        }
 
         const consumerInfo = await natsService.getConsumerInfo(consumerName);
 
@@ -112,10 +151,14 @@ async function messagesRoutes(app: FastifyInstance) {
         });
 
         const response: PullMessagesResponse = {
-          messages,
-          nextCursor: messages.length > 0 ? messages[messages.length - 1].id : undefined,
+          messages: accessibleMessages,
+          nextCursor: accessibleMessages.length > 0 ? accessibleMessages[accessibleMessages.length - 1].id : undefined,
           hasMore: consumerInfo.num_pending > 0,
         };
+
+        app.log.info(
+          `User ${user.userId} pulled ${accessibleMessages.length}/${rawMessages.length} messages`
+        );
 
         return reply.send(response);
       } catch (error: any) {
