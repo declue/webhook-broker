@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             Int       @id @default(autoincrement())
+  githubId       String    @unique @map("github_id")
+  username       String
+  email          String?
+  avatarUrl      String?   @map("avatar_url")
+  accessToken    String    @map("access_token") // Encrypted
+  refreshToken   String?   @map("refresh_token") // Encrypted
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  consumers      Consumer[]
+
+  @@map("users")
+}
+
+model Repository {
+  id           Int      @id @default(autoincrement())
+  fullName     String   @unique @map("full_name") // "owner/repo"
+  webhookPath  String   @unique @map("webhook_path") // "/webhook/github/owner/repo"
+  natsSubject  String   @unique @map("nats_subject") // "webhooks.github.owner.repo"
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([fullName])
+  @@map("repositories")
+}
+
+model Consumer {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  consumerName     String   @unique @map("consumer_name") // "user_{userId}_{repoFullName}"
+  natsSubject      String   @map("nats_subject") // "webhooks.github.owner.repo"
+  filterSubjects   String[] @map("filter_subjects") // Array of subjects user has access to
+  lastSequence     BigInt?  @map("last_sequence") // Last delivered sequence
+  lastAck          BigInt?  @map("last_ack") // Last acknowledged sequence
+  pendingMessages  Int      @default(0) @map("pending_messages")
+  deliveredCount   BigInt   @default(0) @map("delivered_count")
+  ackCount         BigInt   @default(0) @map("ack_count")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([consumerName])
+  @@map("consumers")
+}
+
+model WebhookLog {
+  id            BigInt   @id @default(autoincrement())
+  webhookPath   String   @map("webhook_path")
+  natsSubject   String   @map("nats_subject")
+  source        String   // github, jira, etc
+  method        String
+  headers       Json
+  payloadSize   Int      @map("payload_size") // bytes
+  statusCode    Int      @map("status_code")
+  errorMessage  String?  @map("error_message")
+  receivedAt    DateTime @default(now()) @map("received_at")
+
+  @@index([webhookPath])
+  @@index([source])
+  @@index([receivedAt])
+  @@map("webhook_logs")
+}
