@@ -3,13 +3,15 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import { config } from './config';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { natsService } from './services/nats';
 import { redisService } from './services/redis';
 import webhookRoutes from './routes/webhook';
 import authRoutes from './routes/auth';
 import messagesRoutes from './routes/messages';
 
-export const prisma = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
+export const prisma = new PrismaClient({ adapter });
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({

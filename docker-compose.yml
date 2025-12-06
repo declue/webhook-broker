@@ -8,12 +8,8 @@ services:
       - "4222:4222"  # Client connections
       - "8222:8222"  # HTTP monitoring
       - "6222:6222"  # Cluster routing
-    command:
-      - "-js"        # Enable JetStream
-      - "-m"         # Enable monitoring
-      - "8222"
-      - "--store_dir=/data"
-      - "--max_file_store=10GB"
+    entrypoint: ["nats-server"]
+    command: ["-js", "-m", "8222", "--store_dir=/data"]
     volumes:
       - nats-data:/data
     networks:
@@ -32,7 +28,7 @@ services:
       POSTGRES_USER: webhook
       POSTGRES_PASSWORD: webhook
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
@@ -47,7 +43,7 @@ services:
     image: redis:7-alpine
     container_name: webhook-redis
     ports:
-      - "6379:6379"
+      - "6381:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
