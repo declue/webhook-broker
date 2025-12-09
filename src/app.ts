@@ -63,6 +63,12 @@ export async function buildApp(): Promise<FastifyInstance> {
     },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    // HSTS: Enforce HTTPS in production
+    strictTransportSecurity: config.server.env === 'production' ? {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true,
+    } : false,
   });
 
   // CORS

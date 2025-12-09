@@ -25,6 +25,35 @@ const MAX_SEARCH_LENGTH = 100;
 const MAX_SETTING_VALUE_LENGTH = 10000;
 const MAX_SETTING_DESCRIPTION_LENGTH = 500;
 
+// Sensitive fields to redact from audit logs
+const SENSITIVE_FIELDS = [
+  'accessToken',
+  'refreshToken',
+  'password',
+  'secret',
+  'apiKey',
+  'token',
+];
+
+/**
+ * Redacts sensitive fields from an object for audit logging
+ * Prevents accidental exposure of tokens, passwords, etc.
+ */
+function redactSensitiveData<T extends Record<string, any>>(data: T): T {
+  if (!data || typeof data !== 'object') return data;
+
+  const redacted = { ...data };
+  for (const key of Object.keys(redacted)) {
+    const lowerKey = key.toLowerCase();
+    if (SENSITIVE_FIELDS.some(field => lowerKey.includes(field.toLowerCase()))) {
+      redacted[key] = '[REDACTED]';
+    } else if (typeof redacted[key] === 'object' && redacted[key] !== null) {
+      redacted[key] = redactSensitiveData(redacted[key]);
+    }
+  }
+  return redacted;
+}
+
 // Input sanitization helpers
 function sanitizeSearch(search: string | undefined): string | undefined {
   if (!search) return undefined;
@@ -313,15 +342,15 @@ async function adminRoutes(app: FastifyInstance) {
           },
         });
 
-        // Create audit log
+        // Create audit log with redacted sensitive data
         await prisma.auditLog.create({
           data: {
             userId: adminUser.userId,
             action: 'user.update',
             targetType: 'user',
             targetId: String(userId),
-            oldValue: oldUser,
-            newValue: updateData,
+            oldValue: redactSensitiveData(oldUser),
+            newValue: redactSensitiveData(updateData),
             ipAddress: request.ip,
             userAgent: request.headers['user-agent'],
           },
@@ -507,20 +536,20 @@ async function adminRoutes(app: FastifyInstance) {
           where: { id: consumerId },
         });
 
-        // Create audit log - convert BigInt values to strings for JSON serialization
+        // Create audit log - convert BigInt values to strings and redact sensitive data
         await prisma.auditLog.create({
           data: {
             userId: adminUser.userId,
             action: 'consumer.delete',
             targetType: 'consumer',
             targetId: String(consumerId),
-            oldValue: {
+            oldValue: redactSensitiveData({
               ...consumer,
               lastSequence: consumer.lastSequence?.toString() ?? null,
               lastAck: consumer.lastAck?.toString() ?? null,
               deliveredCount: consumer.deliveredCount.toString(),
               ackCount: consumer.ackCount.toString(),
-            },
+            }),
             ipAddress: request.ip,
             userAgent: request.headers['user-agent'],
           },
@@ -599,15 +628,15 @@ async function adminRoutes(app: FastifyInstance) {
           },
         });
 
-        // Create audit log - handle null oldSetting
+        // Create audit log - handle null oldSetting and redact sensitive data
         await prisma.auditLog.create({
           data: {
             userId: adminUser.userId,
             action: 'settings.update',
             targetType: 'setting',
             targetId: key,
-            oldValue: oldSetting ?? undefined,
-            newValue: { value, description },
+            oldValue: oldSetting ? redactSensitiveData(oldSetting) : undefined,
+            newValue: redactSensitiveData({ value, description }),
             ipAddress: request.ip,
             userAgent: request.headers['user-agent'],
           },

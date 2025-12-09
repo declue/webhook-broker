@@ -16,6 +16,34 @@ interface WebhookParams {
 // Maximum payload size: 1MB
 const MAX_PAYLOAD_SIZE = 1 * 1024 * 1024;
 
+// Headers to exclude from storage (may contain sensitive data)
+const SENSITIVE_HEADERS = [
+  'authorization',
+  'cookie',
+  'x-api-key',
+  'x-auth-token',
+  'x-access-token',
+  'x-secret',
+  'proxy-authorization',
+];
+
+/**
+ * Filters out sensitive headers before storing in database
+ * Preserves webhook-specific headers needed for debugging
+ */
+function filterSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+    if (!SENSITIVE_HEADERS.includes(lowerKey)) {
+      filtered[key] = value;
+    } else {
+      filtered[key] = '[REDACTED]';
+    }
+  }
+  return filtered;
+}
+
 async function webhookRoutes(app: FastifyInstance) {
   app.addContentTypeParser('*', { parseAs: 'buffer' }, async (_req: FastifyRequest, payload: Buffer) => {
     // Enforce payload size limit to prevent DoS
@@ -66,11 +94,14 @@ async function webhookRoutes(app: FastifyInstance) {
           });
         }
 
+        // Filter sensitive headers before storing/publishing
+        const safeHeaders = filterSensitiveHeaders(headers);
+
         const webhookMessage: WebhookMessage = {
           webhookPath: fullPath,
           source,
           method: request.method,
-          headers,
+          headers: safeHeaders,
           payload,
           receivedAt: new Date(),
         };
@@ -83,7 +114,7 @@ async function webhookRoutes(app: FastifyInstance) {
             natsSubject: natsService.webhookPathToSubject(fullPath),
             source,
             method: request.method,
-            headers,
+            headers: safeHeaders,
             payloadSize: rawBody.length,
             statusCode: 202,
             receivedAt: webhookMessage.receivedAt,

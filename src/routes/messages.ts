@@ -25,7 +25,9 @@ async function messagesRoutes(app: FastifyInstance) {
     { onRequest: [authenticate] },
     async (request: FastifyRequest<{ Querystring: PullQuery }>, reply: FastifyReply) => {
       const user = getUserFromToken(request);
-      const limit = parseInt(request.query.limit || '10', 10);
+      const rawLimit = parseInt(request.query.limit || '10', 10);
+      // Validate limit: must be positive integer between 1 and 100
+      const limit = isNaN(rawLimit) || rawLimit < 1 ? 10 : rawLimit;
       const batch = Math.min(limit, 100);
 
       try {
