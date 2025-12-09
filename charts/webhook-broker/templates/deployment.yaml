@@ -1,0 +1,246 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webhook-broker.fullname" . }}
+  labels:
+    {{- include "webhook-broker.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "webhook-broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "webhook-broker.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "webhook-broker.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "webhook-broker.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.PORT | default 3000 }}
+              protocol: TCP
+          {{- if .Values.healthCheck.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            # Basic configuration
+            - name: NODE_ENV
+              value: {{ .Values.env.NODE_ENV | quote }}
+            - name: PORT
+              value: {{ .Values.env.PORT | quote }}
+            - name: HOST
+              value: {{ .Values.env.HOST | quote }}
+
+            # Rate limiting
+            - name: RATE_LIMIT_MAX
+              value: {{ .Values.env.RATE_LIMIT_MAX | quote }}
+            - name: RATE_LIMIT_WINDOW
+              value: {{ .Values.env.RATE_LIMIT_WINDOW | quote }}
+
+            # Redis cache
+            - name: REDIS_CACHE_TTL
+              value: {{ .Values.env.REDIS_CACHE_TTL | quote }}
+
+            # JWT expiration
+            - name: JWT_ACCESS_EXPIRES_IN
+              value: {{ .Values.env.JWT_ACCESS_EXPIRES_IN | quote }}
+            - name: JWT_ACCESS_EXPIRES_IN_SECONDS
+              value: {{ .Values.env.JWT_ACCESS_EXPIRES_IN_SECONDS | quote }}
+            - name: JWT_REFRESH_EXPIRES_IN
+              value: {{ .Values.env.JWT_REFRESH_EXPIRES_IN | quote }}
+
+            # NATS
+            - name: NATS_URL
+              value: {{ .Values.externalServices.nats.url | quote }}
+            - name: NATS_STREAM_NAME
+              value: {{ .Values.externalServices.nats.streamName | quote }}
+            - name: NATS_STREAM_SUBJECTS
+              value: {{ .Values.externalServices.nats.streamSubjects | quote }}
+
+            # Redis
+            - name: REDIS_URL
+              value: {{ .Values.externalServices.redis.url | quote }}
+
+            # Database URL
+            {{- if .Values.externalServices.database.existingSecret }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalServices.database.existingSecret }}
+                  key: {{ .Values.externalServices.database.existingSecretKey }}
+            {{- else if .Values.externalServices.database.url }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: DATABASE_URL
+            {{- end }}
+
+            # GitHub OAuth
+            {{- if .Values.secrets.github.existingSecret }}
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.github.existingSecret }}
+                  key: GITHUB_CLIENT_ID
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.github.existingSecret }}
+                  key: GITHUB_CLIENT_SECRET
+            - name: GITHUB_CALLBACK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.github.existingSecret }}
+                  key: GITHUB_CALLBACK_URL
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.github.existingSecret }}
+                  key: GITHUB_WEBHOOK_SECRET
+            {{- else }}
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: GITHUB_CLIENT_ID
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: GITHUB_CLIENT_SECRET
+            - name: GITHUB_CALLBACK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: GITHUB_CALLBACK_URL
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: GITHUB_WEBHOOK_SECRET
+            {{- end }}
+
+            # GitLab webhook secret (optional)
+            {{- if or .Values.secrets.gitlab.existingSecret .Values.secrets.gitlab.webhookSecret }}
+            - name: GITLAB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.gitlab.existingSecret | default (include "webhook-broker.secretName" .) }}
+                  key: GITLAB_WEBHOOK_SECRET
+            {{- end }}
+
+            # Jira webhook secret (optional)
+            {{- if or .Values.secrets.jira.existingSecret .Values.secrets.jira.webhookSecret }}
+            - name: JIRA_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.jira.existingSecret | default (include "webhook-broker.secretName" .) }}
+                  key: JIRA_WEBHOOK_SECRET
+            {{- end }}
+
+            # JWT Secret
+            {{- if .Values.secrets.jwt.existingSecret }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.jwt.existingSecret }}
+                  key: JWT_SECRET
+            {{- else }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: JWT_SECRET
+            {{- end }}
+
+            # Encryption Key
+            {{- if .Values.secrets.encryption.existingSecret }}
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.encryption.existingSecret }}
+                  key: ENCRYPTION_KEY
+            {{- else }}
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: ENCRYPTION_KEY
+            {{- end }}
+
+            # Metrics Token
+            {{- if .Values.secrets.metrics.existingSecret }}
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.metrics.existingSecret }}
+                  key: METRICS_TOKEN
+            {{- else }}
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webhook-broker.secretName" . }}
+                  key: METRICS_TOKEN
+            {{- end }}
+
+            # CORS Origin
+            {{- if .Values.secrets.cors.origin }}
+            - name: CORS_ORIGIN
+              value: {{ .Values.secrets.cors.origin | quote }}
+            {{- end }}
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-broker
+  namespace: argocd
+  # ArgoCD Image Updater annotations
+  annotations:
+    # Enable image updater for this application
+    argocd-image-updater.argoproj.io/image-list: webhook=ghcr.io/declue/webhook-broker
+    # Update strategy: use semver for tagged releases
+    argocd-image-updater.argoproj.io/webhook.update-strategy: semver
+    # Allow all semver versions
+    argocd-image-updater.argoproj.io/webhook.allow-tags: regexp:^[0-9]+\.[0-9]+\.[0-9]+$
+    # Write back method: git commit to repository
+    argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/git-creds
+    # Target file for image tag updates
+    argocd-image-updater.argoproj.io/write-back-target: helmvalues:charts/webhook-broker/values.yaml
+    # Helm value path for the image tag
+    argocd-image-updater.argoproj.io/webhook.helm.image-tag: image.tag
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/declue/webhook-broker.git
+    targetRevision: HEAD
+    path: charts/webhook-broker
+    helm:
+      releaseName: webhook-broker
+      valueFiles:
+        - values.yaml
+        - values-production.yaml
+      parameters:
+        - name: ingress.enabled
+          value: "true"
+        - name: ingress.className
+          value: nginx
+        - name: ingress.hosts[0].host
+          value: webhook.euno.work
+        - name: ingress.hosts[0].paths[0].path
+          value: /
+        - name: ingress.hosts[0].paths[0].pathType
+          value: Prefix
+        - name: ingress.tls[0].secretName
+          value: webhook-broker-tls
+        - name: ingress.tls[0].hosts[0]
+          value: webhook.euno.work
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: webhook-broker
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

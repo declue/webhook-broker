@@ -1,0 +1,7 @@
+# This file is managed by ArgoCD Image Updater
+# Do not edit manually
+helm:
+  parameters:
+    - name: image.tag
+      value: "0.2.0"
+      forceString: true

@@ -1,0 +1,178 @@
+# Production values for webhook-broker
+# This file is used by ArgoCD for production deployment
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/declue/webhook-broker
+  pullPolicy: IfNotPresent
+  # Tag is managed by ArgoCD Image Updater
+  tag: ""
+
+# Ingress configuration for webhook.euno.work
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+  hosts:
+    - host: webhook.euno.work
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: webhook-broker-tls
+      hosts:
+        - webhook.euno.work
+
+# Production resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 512Mi
+
+# Enable autoscaling for production
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget for high availability
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Anti-affinity for spreading pods across nodes
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - webhook-broker
+          topologyKey: kubernetes.io/hostname
+
+# Environment configuration
+env:
+  NODE_ENV: production
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  RATE_LIMIT_MAX: "100"
+  RATE_LIMIT_WINDOW: "1 minute"
+  REDIS_CACHE_TTL: "300"
+  JWT_ACCESS_EXPIRES_IN: "15m"
+  JWT_ACCESS_EXPIRES_IN_SECONDS: "900"
+  JWT_REFRESH_EXPIRES_IN: "7d"
+
+# External services - configure for your infrastructure
+externalServices:
+  nats:
+    url: "nats://nats.nats-system.svc.cluster.local:4222"
+    streamName: "WEBHOOKS"
+    streamSubjects: "webhooks.>"
+  database:
+    existingSecret: "webhook-broker-db-secret"
+    existingSecretKey: "DATABASE_URL"
+  redis:
+    url: "redis://redis.redis-system.svc.cluster.local:6379"
+
+# Secrets - use existing secrets in production
+secrets:
+  github:
+    existingSecret: "webhook-broker-github-secret"
+  gitlab:
+    existingSecret: "webhook-broker-gitlab-secret"
+  jira:
+    existingSecret: "webhook-broker-jira-secret"
+  jwt:
+    existingSecret: "webhook-broker-jwt-secret"
+  encryption:
+    existingSecret: "webhook-broker-encryption-secret"
+  metrics:
+    existingSecret: "webhook-broker-metrics-secret"
+  cors:
+    origin: "https://webhook.euno.work"
+
+# Health checks
+healthCheck:
+  enabled: true
+  path: /health
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Enable Prometheus ServiceMonitor
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Network policy for security
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nats-system
+      ports:
+        - protocol: TCP
+          port: 4222
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-system
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

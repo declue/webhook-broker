@@ -1,6 +1,6 @@
 {
   "name": "webhook-broker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Webhook broker using NATS JetStream with GitHub OAuth",
   "main": "dist/index.js",
   "scripts": {

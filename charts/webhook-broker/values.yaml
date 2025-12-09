@@ -1,0 +1,237 @@
+# Default values for webhook-broker
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/declue/webhook-broker
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: webhook-broker.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: webhook-broker-tls
+  #    hosts:
+  #      - webhook-broker.local
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Environment configuration
+env:
+  NODE_ENV: production
+  PORT: "3000"
+  HOST: "0.0.0.0"
+
+  # Rate limiting
+  RATE_LIMIT_MAX: "100"
+  RATE_LIMIT_WINDOW: "1 minute"
+
+  # Redis cache TTL
+  REDIS_CACHE_TTL: "300"
+
+  # JWT expiration
+  JWT_ACCESS_EXPIRES_IN: "15m"
+  JWT_ACCESS_EXPIRES_IN_SECONDS: "900"
+  JWT_REFRESH_EXPIRES_IN: "7d"
+
+# External services configuration
+externalServices:
+  # NATS JetStream
+  nats:
+    url: "nats://nats:4222"
+    streamName: "WEBHOOKS"
+    streamSubjects: "webhooks.>"
+
+  # PostgreSQL
+  database:
+    # Use existingSecret for DATABASE_URL or set url directly
+    existingSecret: ""
+    existingSecretKey: "DATABASE_URL"
+    url: ""
+
+  # Redis
+  redis:
+    url: "redis://redis:6379"
+
+# Secrets configuration
+secrets:
+  # GitHub OAuth
+  github:
+    existingSecret: ""
+    clientId: ""
+    clientSecret: ""
+    callbackUrl: ""
+    webhookSecret: ""
+
+  # GitLab webhook (optional)
+  gitlab:
+    existingSecret: ""
+    webhookSecret: ""
+
+  # Jira webhook (optional)
+  jira:
+    existingSecret: ""
+    webhookSecret: ""
+
+  # JWT
+  jwt:
+    existingSecret: ""
+    secret: ""
+
+  # Encryption key (separate from JWT)
+  encryption:
+    existingSecret: ""
+    key: ""
+
+  # Metrics token
+  metrics:
+    existingSecret: ""
+    token: ""
+
+  # CORS origin
+  cors:
+    origin: ""
+
+# Health check configuration
+healthCheck:
+  enabled: true
+  path: /health
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Prometheus metrics
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Network policy
+networkPolicy:
+  enabled: true
+  ingress:
+    # Allow traffic from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow traffic from Prometheus
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow NATS
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    # Allow PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow GitHub API
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1

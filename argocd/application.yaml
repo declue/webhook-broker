@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-broker
+  namespace: argocd
+  annotations:
+    # ArgoCD Image Updater annotations
+    argocd-image-updater.argoproj.io/image-list: webhook-broker=ghcr.io/declue/webhook-broker
+    argocd-image-updater.argoproj.io/webhook-broker.update-strategy: semver
+    argocd-image-updater.argoproj.io/webhook-broker.helm.image-name: image.repository
+    argocd-image-updater.argoproj.io/webhook-broker.helm.image-tag: image.tag
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/git-branch: main
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/declue/webhook-broker.git
+    targetRevision: HEAD
+    path: charts/webhook-broker
+    helm:
+      releaseName: webhook-broker
+      valueFiles:
+        - values.yaml
+        - values-production.yaml
+      # Values can be overridden here
+      # parameters:
+      #   - name: replicaCount
+      #     value: "2"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: webhook-broker
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Health checks
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

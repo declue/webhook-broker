@@ -1,0 +1,17 @@
+apiVersion: v2
+name: webhook-broker
+description: Webhook broker using NATS JetStream with GitHub OAuth
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+keywords:
+  - webhook
+  - nats
+  - jetstream
+  - github
+  - oauth
+  - gitops
+maintainers:
+  - name: declue
+sources:
+  - https://github.com/declue/webhook-broker
