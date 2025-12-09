@@ -63,12 +63,43 @@ class NATSService {
 
     try {
       const stream = await this.jsm.streams.info(config.nats.streamName);
-      console.log(`✅ Stream '${config.nats.streamName}' already exists`);
+      console.log(`Stream '${config.nats.streamName}' already exists`);
       console.log(`   Messages: ${stream.state.messages}, Bytes: ${stream.state.bytes}`);
     } catch (err: any) {
       if (err.message.includes('stream not found')) {
         await this.jsm.streams.add(streamConfig);
-        console.log(`✅ Created stream '${config.nats.streamName}'`);
+        console.log(`Created stream '${config.nats.streamName}'`);
+      } else {
+        throw err;
+      }
+    }
+
+    // Create Dead Letter Queue stream
+    await this.ensureDeadLetterStream();
+  }
+
+  private async ensureDeadLetterStream(): Promise<void> {
+    if (!this.jsm) throw new Error('NATS not connected');
+
+    const dlqStreamName = `${config.nats.streamName}_DLQ`;
+    const dlqStreamConfig: Partial<StreamConfig> = {
+      name: dlqStreamName,
+      subjects: ['dlq.webhooks.>'],
+      storage: StorageType.File,
+      retention: 'limits' as any,
+      max_age: 90 * 24 * 60 * 60 * 1_000_000_000, // 90 days for DLQ
+      max_bytes: 5 * 1024 * 1024 * 1024, // 5GB
+      max_consumers: -1,
+      discard: 'old' as any,
+    };
+
+    try {
+      await this.jsm.streams.info(dlqStreamName);
+      console.log(`Dead Letter Queue stream '${dlqStreamName}' already exists`);
+    } catch (err: any) {
+      if (err.message.includes('stream not found')) {
+        await this.jsm.streams.add(dlqStreamConfig);
+        console.log(`Created Dead Letter Queue stream '${dlqStreamName}'`);
       } else {
         throw err;
       }
@@ -165,6 +196,93 @@ class NATSService {
     }
   }
 
+  async nakMessage(msg: any): Promise<void> {
+    if (msg._natsMsg) {
+      (msg._natsMsg as JsMsg).nak();
+    }
+  }
+
+  /**
+   * Move a message to the Dead Letter Queue
+   * Used when a message has exceeded max delivery attempts
+   */
+  async moveToDeadLetterQueue(msg: any, reason: string): Promise<void> {
+    if (!this.js) throw new Error('NATS not connected');
+
+    const originalSubject = (msg._natsMsg as JsMsg).subject;
+    const dlqSubject = `dlq.${originalSubject}`;
+
+    const dlqMessage = {
+      originalSubject,
+      originalSeq: (msg._natsMsg as JsMsg).seq,
+      reason,
+      movedAt: new Date().toISOString(),
+      data: msg,
+    };
+
+    await this.js.publish(
+      dlqSubject,
+      new TextEncoder().encode(JSON.stringify(dlqMessage))
+    );
+
+    // Acknowledge the original message so it's removed from the main queue
+    await this.ackMessage(msg);
+
+    console.log(`Moved message ${(msg._natsMsg as JsMsg).seq} to DLQ: ${reason}`);
+  }
+
+  /**
+   * Get messages from the Dead Letter Queue for review/retry
+   */
+  async getDLQMessages(limit: number = 10): Promise<any[]> {
+    if (!this.js) throw new Error('NATS not connected');
+
+    const dlqStreamName = `${config.nats.streamName}_DLQ`;
+    const dlqConsumerName = 'dlq_reader';
+
+    try {
+      // Create a temporary consumer for reading DLQ
+      const consumerConfig: Partial<ConsumerConfig> = {
+        name: dlqConsumerName,
+        durable_name: dlqConsumerName,
+        ack_policy: AckPolicy.Explicit,
+        deliver_policy: DeliverPolicy.All,
+        filter_subjects: ['dlq.webhooks.>'],
+      };
+
+      try {
+        await this.jsm!.consumers.add(dlqStreamName, consumerConfig);
+      } catch (err: any) {
+        if (!err.message.includes('consumer already exists')) {
+          throw err;
+        }
+      }
+
+      const consumer = await this.js.consumers.get(dlqStreamName, dlqConsumerName);
+      const messages: any[] = [];
+
+      const iter = await consumer.fetch({ max_messages: limit, expires: 5000 });
+
+      for await (const msg of iter) {
+        try {
+          const data = new TextDecoder().decode(msg.data);
+          const dlqMsg = JSON.parse(data);
+          dlqMsg._natsMsg = msg;
+          messages.push(dlqMsg);
+        } catch (err) {
+          console.error('Failed to parse DLQ message:', err);
+        }
+      }
+
+      return messages;
+    } catch (err: any) {
+      if (err.message?.includes('no messages')) {
+        return [];
+      }
+      throw err;
+    }
+  }
+
   async getConsumerInfo(consumerName: string) {
     if (!this.jsm) throw new Error('NATS not connected');
     return await this.jsm.consumers.info(config.nats.streamName, consumerName);
@@ -194,6 +312,49 @@ class NATSService {
       await this.nc.close();
       console.log('❌ Disconnected from NATS');
     }
+  }
+
+  async healthCheck(): Promise<{ healthy: boolean; details: Record<string, any> }> {
+    try {
+      if (!this.nc || !this.jsm) {
+        return {
+          healthy: false,
+          details: { error: 'Not connected', connected: false },
+        };
+      }
+
+      // Check connection status
+      const isClosed = this.nc.isClosed();
+      if (isClosed) {
+        return {
+          healthy: false,
+          details: { error: 'Connection closed', connected: false },
+        };
+      }
+
+      // Get stream info
+      const streamInfo = await this.jsm.streams.info(config.nats.streamName);
+
+      return {
+        healthy: true,
+        details: {
+          connected: true,
+          stream: config.nats.streamName,
+          messages: streamInfo.state.messages,
+          bytes: streamInfo.state.bytes,
+          consumers: streamInfo.state.consumer_count,
+        },
+      };
+    } catch (err: any) {
+      return {
+        healthy: false,
+        details: { error: err.message, connected: false },
+      };
+    }
+  }
+
+  isConnected(): boolean {
+    return this.nc !== null && !this.nc.isClosed();
   }
 }
 

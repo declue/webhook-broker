@@ -4,7 +4,8 @@ import { natsService } from '../services/nats';
 import { githubService } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
-import { PullMessagesRequest, PullMessagesResponse } from '../types';
+import { PullMessagesResponse } from '../types';
+import { decrypt } from '../services/crypto';
 
 interface PullQuery {
   limit?: string;
@@ -35,10 +36,13 @@ async function messagesRoutes(app: FastifyInstance) {
           return reply.code(404).send({ error: 'User not found' });
         }
 
+        // Decrypt the access token for GitHub API calls
+        const decryptedAccessToken = decrypt(dbUser.accessToken);
+
         let filterSubjects = await redisService.getCachedUserPermissions(user.userId);
 
         if (!filterSubjects) {
-          filterSubjects = await githubService.getAccessibleSubjects(dbUser.accessToken);
+          filterSubjects = await githubService.getAccessibleSubjects(decryptedAccessToken);
           await redisService.cacheUserPermissions(user.userId, filterSubjects);
           app.log.info(`Cached ${filterSubjects.length} permissions for user ${user.userId}`);
         }
@@ -112,7 +116,7 @@ async function messagesRoutes(app: FastifyInstance) {
           if (hasAccess === null) {
             // Cache miss - check with GitHub API
             hasAccess = await githubService.checkWebhookAccess(
-              dbUser.accessToken,
+              decryptedAccessToken,
               message.webhookPath
             );
 

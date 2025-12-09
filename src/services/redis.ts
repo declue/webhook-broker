@@ -97,6 +97,52 @@ class RedisService {
     const normalized = webhookPath.replace(/^\/+|\/+$/g, '');
     return `webhook_access:${userId}:${normalized}`;
   }
+
+  async healthCheck(): Promise<{ healthy: boolean; details: Record<string, any> }> {
+    try {
+      if (!this.client) {
+        return {
+          healthy: false,
+          details: { error: 'Not connected', connected: false },
+        };
+      }
+
+      // Ping Redis to check connection
+      const pingResult = await this.client.ping();
+      if (pingResult !== 'PONG') {
+        return {
+          healthy: false,
+          details: { error: 'Ping failed', connected: false },
+        };
+      }
+
+      // Get Redis info
+      const info = await this.client.info('memory');
+      const usedMemoryMatch = info.match(/used_memory_human:(\S+)/);
+      const usedMemory = usedMemoryMatch ? usedMemoryMatch[1] : 'unknown';
+
+      return {
+        healthy: true,
+        details: {
+          connected: true,
+          usedMemory,
+        },
+      };
+    } catch (err: any) {
+      return {
+        healthy: false,
+        details: { error: err.message, connected: false },
+      };
+    }
+  }
+
+  isConnected(): boolean {
+    return this.client !== null && this.client.status === 'ready';
+  }
+
+  getClient(): Redis | null {
+    return this.client;
+  }
 }
 
 export const redisService = new RedisService();

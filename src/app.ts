@@ -3,6 +3,8 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import helmet from '@fastify/helmet';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { config, validateConfig } from './config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -11,6 +13,11 @@ import { redisService } from './services/redis';
 import webhookRoutes from './routes/webhook';
 import authRoutes from './routes/auth';
 import messagesRoutes from './routes/messages';
+import {
+  register,
+  httpRequestsTotal,
+  httpRequestDuration,
+} from './services/metrics';
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 export const prisma = new PrismaClient({ adapter });
@@ -74,20 +81,61 @@ export async function buildApp(): Promise<FastifyInstance> {
       const user = request.user as { userId?: number } | undefined;
       return user?.userId ? `user:${user.userId}` : request.ip;
     },
-    errorResponseBuilder: (request, context) => ({
+    errorResponseBuilder: (_request, context) => ({
       error: 'Too Many Requests',
       message: `Rate limit exceeded. Try again in ${Math.ceil(context.ttl / 1000)} seconds.`,
       retryAfter: Math.ceil(context.ttl / 1000),
     }),
     // Skip rate limiting for health checks
-    allowList: (request) => {
-      return request.url === '/health';
+    allowList: (_request) => {
+      return _request.url === '/health';
     },
   });
 
   // JWT
   await app.register(jwt, {
     secret: config.jwt.secret,
+  });
+
+  // Swagger documentation
+  await app.register(swagger, {
+    openapi: {
+      openapi: '3.0.0',
+      info: {
+        title: 'Webhook Broker API',
+        description: 'GitHub Webhook Broker with NATS JetStream - API Documentation',
+        version: '1.0.0',
+      },
+      servers: [
+        {
+          url: `http://localhost:${config.server.port}`,
+          description: 'Development server',
+        },
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT',
+          },
+        },
+      },
+      tags: [
+        { name: 'Auth', description: 'Authentication endpoints' },
+        { name: 'Messages', description: 'Message pull and acknowledgment' },
+        { name: 'Webhook', description: 'Webhook receiver endpoints' },
+        { name: 'Health', description: 'Health check endpoints' },
+      ],
+    },
+  });
+
+  await app.register(swaggerUi, {
+    routePrefix: '/docs',
+    uiConfig: {
+      docExpansion: 'list',
+      deepLinking: true,
+    },
   });
 
   // Initialize services
@@ -99,7 +147,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes, { prefix: `${config.paths.apiPrefix}/auth` });
   await app.register(messagesRoutes, { prefix: `${config.paths.apiPrefix}/messages` });
 
-  // Health check
+  // Simple health check for load balancers
   app.get('/health', async () => {
     return {
       status: 'ok',
@@ -108,8 +156,86 @@ export async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
+  // Detailed health check for monitoring
+  app.get('/health/ready', async (_request, reply) => {
+    const [natsHealth, redisHealth] = await Promise.all([
+      natsService.healthCheck(),
+      redisService.healthCheck(),
+    ]);
+
+    // Database health check
+    let dbHealth: { healthy: boolean; details: Record<string, any> };
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      dbHealth = {
+        healthy: true,
+        details: { connected: true },
+      };
+    } catch (err: any) {
+      dbHealth = {
+        healthy: false,
+        details: { error: err.message, connected: false },
+      };
+    }
+
+    const allHealthy = natsHealth.healthy && redisHealth.healthy && dbHealth.healthy;
+    const statusCode = allHealthy ? 200 : 503;
+
+    return reply.code(statusCode).send({
+      status: allHealthy ? 'healthy' : 'unhealthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {
+        nats: natsHealth,
+        redis: redisHealth,
+        database: dbHealth,
+      },
+    });
+  });
+
+  // Liveness probe - just checks if the server is running
+  app.get('/health/live', async () => {
+    return {
+      status: 'alive',
+      timestamp: new Date().toISOString(),
+    };
+  });
+
+  // Prometheus metrics endpoint
+  app.get('/metrics', async (_request, reply) => {
+    reply.header('Content-Type', register.contentType);
+    return register.metrics();
+  });
+
+  // Request metrics hook
+  app.addHook('onRequest', async (request) => {
+    (request as any).startTime = process.hrtime.bigint();
+  });
+
+  app.addHook('onResponse', async (request, reply) => {
+    const startTime = (request as any).startTime;
+    if (startTime) {
+      const duration = Number(process.hrtime.bigint() - startTime) / 1e9;
+      const path = request.routeOptions?.url || request.url.split('?')[0];
+
+      // Skip metrics for the metrics endpoint itself
+      if (path !== '/metrics') {
+        httpRequestsTotal.inc({
+          method: request.method,
+          path,
+          status_code: reply.statusCode.toString(),
+        });
+
+        httpRequestDuration.observe(
+          { method: request.method, path },
+          duration
+        );
+      }
+    }
+  });
+
   // Security-focused error handler
-  app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
     app.log.error(error);
 
     // Don't expose internal errors in production

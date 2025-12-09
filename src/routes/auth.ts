@@ -3,7 +3,7 @@ import { config } from '../config';
 import { githubService } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
-import { encrypt, generateSecureState, secureCompare } from '../services/crypto';
+import { encrypt, generateSecureState } from '../services/crypto';
 
 interface CallbackQuery {
   code?: string;

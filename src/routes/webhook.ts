@@ -4,13 +4,17 @@ import { prisma } from '../app';
 import { config } from '../config';
 import { WebhookMessage } from '../types';
 import crypto from 'crypto';
+import {
+  webhookReceivedTotal,
+  webhookProcessingDuration,
+} from '../services/metrics';
 
 interface WebhookParams {
   '*': string;
 }
 
 async function webhookRoutes(app: FastifyInstance) {
-  app.addContentTypeParser('*', { parseAs: 'buffer' }, async (req, payload: Buffer) => {
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, async (_req: FastifyRequest, payload: Buffer) => {
     return payload;
   });
 
@@ -79,6 +83,10 @@ async function webhookRoutes(app: FastifyInstance) {
         const duration = Date.now() - startTime;
         app.log.info(`Webhook received: ${fullPath} [${source}] (${duration}ms)`);
 
+        // Record metrics
+        webhookReceivedTotal.inc({ source, status: 'success' });
+        webhookProcessingDuration.observe({ source }, duration / 1000);
+
         return reply.code(202).send({
           status: 'accepted',
           webhookPath: fullPath,
@@ -87,6 +95,7 @@ async function webhookRoutes(app: FastifyInstance) {
         });
       } catch (error: any) {
         app.log.error(`Webhook error: ${fullPath}`, error);
+        webhookReceivedTotal.inc({ source: detectWebhookSource(fullPath, {}), status: 'error' });
 
         await prisma.webhookLog.create({
           data: {
