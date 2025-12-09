@@ -49,10 +49,11 @@ async function webhookRoutes(app: FastifyInstance) {
         // Validate webhook signature based on source
         const signatureValidation = validateWebhookSignature(source, rawBody, headers);
         if (!signatureValidation.valid) {
+          // Log detailed reason internally, but don't expose to client
           app.log.warn(`Webhook signature validation failed for ${source}: ${signatureValidation.reason}`);
           return reply.code(401).send({
             error: 'Signature verification failed',
-            message: signatureValidation.reason,
+            // Don't expose detailed reason to prevent information leakage
           });
         }
 
@@ -241,18 +242,25 @@ function validateGitHubSignature(
  */
 function validateGitLabSignature(headers: Record<string, string>): SignatureValidationResult {
   const token = headers['x-gitlab-token'];
-  const secret = process.env.GITLAB_WEBHOOK_SECRET;
+  const secret = config.gitlab.webhookSecret;
 
-  // If no secret configured, allow (but warn in production)
-  if (!secret) {
-    if (config.server.env === 'production') {
-      console.warn('⚠️  GITLAB_WEBHOOK_SECRET not set. Consider configuring it for security.');
+  // In production, secret is required
+  if (config.server.env === 'production') {
+    if (!secret) {
+      return { valid: false, reason: 'GitLab webhook secret not configured' };
     }
-    return { valid: true };
-  }
-
-  if (!token) {
-    return { valid: false, reason: 'Missing X-Gitlab-Token header' };
+    if (!token) {
+      return { valid: false, reason: 'Missing X-Gitlab-Token header' };
+    }
+  } else {
+    // In development, warn but allow if not configured
+    if (!secret) {
+      console.warn('⚠️  Skipping GitLab signature verification: GITLAB_WEBHOOK_SECRET not set');
+      return { valid: true };
+    }
+    if (!token) {
+      return { valid: false, reason: 'Missing X-Gitlab-Token header' };
+    }
   }
 
   // Use constant-time comparison

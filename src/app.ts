@@ -219,28 +219,33 @@ export async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
-  // Prometheus metrics endpoint - protected in production
+  // Prometheus metrics endpoint - always requires token authentication in production
   app.get('/metrics', async (request, reply) => {
-    // In production, only allow access from internal networks or with valid token
-    if (config.server.env === 'production') {
-      const metricsToken = process.env.METRICS_TOKEN;
-      const authHeader = request.headers.authorization;
+    const metricsToken = config.security.metricsToken;
+    const authHeader = request.headers.authorization;
 
-      // If METRICS_TOKEN is set, require Bearer token authentication
-      if (metricsToken) {
-        if (!authHeader || authHeader !== `Bearer ${metricsToken}`) {
+    // In production, always require token authentication
+    if (config.server.env === 'production') {
+      if (!metricsToken) {
+        // This should not happen due to validateConfig, but defensive check
+        app.log.error('METRICS_TOKEN not configured in production');
+        return reply.code(503).send({ error: 'Service unavailable' });
+      }
+
+      if (!authHeader || authHeader !== `Bearer ${metricsToken}`) {
+        return reply.code(401).send({ error: 'Unauthorized' });
+      }
+    } else {
+      // In development, allow token auth or localhost access
+      if (metricsToken && authHeader) {
+        if (authHeader !== `Bearer ${metricsToken}`) {
           return reply.code(401).send({ error: 'Unauthorized' });
         }
-      } else {
-        // If no token configured, only allow from localhost/internal IPs
+      } else if (!metricsToken) {
+        // Only allow localhost in development without token
         const clientIp = request.ip;
-        const isInternal = clientIp === '127.0.0.1' ||
-          clientIp === '::1' ||
-          clientIp.startsWith('10.') ||
-          clientIp.startsWith('172.') ||
-          clientIp.startsWith('192.168.');
-
-        if (!isInternal) {
+        const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1';
+        if (!isLocalhost) {
           return reply.code(403).send({ error: 'Forbidden' });
         }
       }

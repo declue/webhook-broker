@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authenticate, getUserFromToken } from '../middleware/auth';
 import { natsService } from '../services/nats';
-import { githubService } from '../services/github';
+import { githubService, GitHubRateLimitError, GitHubAPIError } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
 import { config } from '../config';
@@ -166,12 +166,34 @@ async function messagesRoutes(app: FastifyInstance) {
         );
 
         return reply.send(response);
-      } catch (error: any) {
-        app.log.error('Pull messages error:', error);
+      } catch (error) {
+        // Handle GitHub API rate limit errors specifically
+        if (error instanceof GitHubRateLimitError) {
+          app.log.warn(`GitHub rate limit hit for user ${user.userId}: ${error.message}`);
+          return reply.code(429).send({
+            error: 'GitHub API rate limit exceeded',
+            message: 'Please try again later',
+            retryAfter: Math.ceil((error.resetAt.getTime() - Date.now()) / 1000),
+          });
+        }
+
+        // Handle other GitHub API errors
+        if (error instanceof GitHubAPIError) {
+          app.log.error(`GitHub API error for user ${user.userId}: ${error.message}`);
+          return reply.code(502).send({
+            error: 'GitHub API error',
+            message: config.server.env === 'production'
+              ? 'Failed to verify repository access'
+              : error.message,
+          });
+        }
+
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        app.log.error(`Pull messages error: ${errorMessage}`);
         return reply.code(500).send({
           error: 'Failed to pull messages',
           // Don't expose internal error details in production
-          ...(config.server.env !== 'production' && { message: error.message }),
+          ...(config.server.env !== 'production' && { message: errorMessage }),
         });
       }
     }

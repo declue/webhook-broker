@@ -46,11 +46,19 @@ export const config = {
       max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
       timeWindow: process.env.RATE_LIMIT_WINDOW || '1 minute',
     },
+    // Metrics endpoint protection
+    metricsToken: process.env.METRICS_TOKEN || '',
+    // CORS origin for production
+    corsOrigin: process.env.CORS_ORIGIN || '',
+  },
+  gitlab: {
+    webhookSecret: process.env.GITLAB_WEBHOOK_SECRET || '',
   },
 };
 
 export function validateConfig() {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   // Required in production
   const requiredInProduction = [
@@ -58,6 +66,9 @@ export function validateConfig() {
     { key: 'GITHUB_CLIENT_SECRET', value: config.github.clientSecret },
     { key: 'JWT_SECRET', value: config.jwt.secret, invalidValues: ['your-super-secret-jwt-key'] },
     { key: 'GITHUB_WEBHOOK_SECRET', value: config.github.webhookSecret },
+    { key: 'METRICS_TOKEN', value: config.security.metricsToken },
+    { key: 'CORS_ORIGIN', value: config.security.corsOrigin },
+    { key: 'ENCRYPTION_KEY', value: process.env.ENCRYPTION_KEY },
   ];
 
   if (config.server.env === 'production') {
@@ -78,16 +89,38 @@ export function validateConfig() {
     if (config.github.webhookSecret && config.github.webhookSecret.length < 20) {
       errors.push('GITHUB_WEBHOOK_SECRET should be at least 20 characters long');
     }
+
+    // METRICS_TOKEN should be at least 32 characters for security
+    if (config.security.metricsToken && config.security.metricsToken.length < 32) {
+      errors.push('METRICS_TOKEN must be at least 32 characters long');
+    }
+
+    // ENCRYPTION_KEY should be exactly 32 bytes (64 hex chars) for AES-256
+    const encryptionKey = process.env.ENCRYPTION_KEY;
+    if (encryptionKey && encryptionKey.length !== 64) {
+      errors.push('ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256');
+    }
   }
 
   // Warnings for development
   if (config.server.env !== 'production') {
     if (!config.github.webhookSecret) {
-      console.warn('⚠️  WARNING: GITHUB_WEBHOOK_SECRET is not set. Webhook signature verification will be skipped in development.');
+      warnings.push('GITHUB_WEBHOOK_SECRET is not set. Webhook signature verification will be skipped.');
     }
     if (config.jwt.secret === 'your-super-secret-jwt-key') {
-      console.warn('⚠️  WARNING: Using default JWT_SECRET. This is insecure for production.');
+      warnings.push('Using default JWT_SECRET. This is insecure for production.');
     }
+    if (!config.security.metricsToken) {
+      warnings.push('METRICS_TOKEN is not set. Metrics endpoint will use IP-based access control.');
+    }
+    if (!config.gitlab.webhookSecret) {
+      warnings.push('GITLAB_WEBHOOK_SECRET is not set. GitLab webhook verification will be skipped.');
+    }
+  }
+
+  // Print warnings
+  for (const warning of warnings) {
+    console.warn(`⚠️  WARNING: ${warning}`);
   }
 
   if (errors.length > 0) {

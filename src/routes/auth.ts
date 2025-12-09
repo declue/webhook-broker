@@ -5,6 +5,7 @@ import { githubService } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
 import { encrypt, generateSecureState } from '../services/crypto';
+import { RefreshTokenPayloadSchema } from '../types';
 
 // Generate a unique JWT ID
 function generateJti(): string {
@@ -235,15 +236,16 @@ async function authRoutes(app: FastifyInstance) {
     const refreshToken = authHeader.substring(7);
 
     try {
-      const decoded = app.jwt.verify(refreshToken) as {
-        userId: number;
-        githubId: string;
-        type: string;
-      };
+      const rawDecoded = app.jwt.verify(refreshToken);
 
-      if (decoded.type !== 'refresh') {
-        return reply.code(401).send({ error: 'Invalid token type' });
+      // Runtime validation of JWT payload
+      const parseResult = RefreshTokenPayloadSchema.safeParse(rawDecoded);
+      if (!parseResult.success) {
+        app.log.warn('Invalid refresh token payload structure');
+        return reply.code(401).send({ error: 'Invalid token format' });
       }
+
+      const decoded = parseResult.data;
 
       // Verify user still exists and is active
       const user = await prisma.user.findUnique({

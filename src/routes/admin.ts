@@ -20,6 +20,45 @@ interface PaginationQuery {
   search?: string;
 }
 
+// Input validation constants
+const MAX_SEARCH_LENGTH = 100;
+const MAX_SETTING_VALUE_LENGTH = 10000;
+const MAX_SETTING_DESCRIPTION_LENGTH = 500;
+
+// Input sanitization helpers
+function sanitizeSearch(search: string | undefined): string | undefined {
+  if (!search) return undefined;
+  // Truncate to max length and trim whitespace
+  return search.substring(0, MAX_SEARCH_LENGTH).trim() || undefined;
+}
+
+function validatePositiveInt(value: string | undefined, defaultVal: number, max: number): number {
+  if (!value) return defaultVal;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < 1) return defaultVal;
+  return Math.min(parsed, max);
+}
+
+function validateId(id: string): { valid: true; value: number } | { valid: false; error: string } {
+  const parsed = parseInt(id, 10);
+  if (isNaN(parsed) || parsed < 1) {
+    return { valid: false, error: 'Invalid ID format' };
+  }
+  return { valid: true, value: parsed };
+}
+
+function validateBigIntId(id: string): { valid: true; value: bigint } | { valid: false; error: string } {
+  try {
+    const parsed = BigInt(id);
+    if (parsed < 1n) {
+      return { valid: false, error: 'Invalid ID format' };
+    }
+    return { valid: true, value: parsed };
+  } catch {
+    return { valid: false, error: 'Invalid ID format' };
+  }
+}
+
 // Admin-specific rate limit configuration
 const ADMIN_RATE_LIMIT = {
   max: 30, // 30 requests per minute for admin endpoints
@@ -106,9 +145,9 @@ async function adminRoutes(app: FastifyInstance) {
   app.get<{ Querystring: PaginationQuery }>(
     '/users',
     async (request: FastifyRequest<{ Querystring: PaginationQuery }>, reply: FastifyReply) => {
-      const page = parseInt(request.query.page || '1', 10);
-      const limit = Math.min(parseInt(request.query.limit || '20', 10), 100);
-      const search = request.query.search;
+      const page = validatePositiveInt(request.query.page, 1, 10000);
+      const limit = validatePositiveInt(request.query.limit, 20, 100);
+      const search = sanitizeSearch(request.query.search);
 
       try {
         const where = search
@@ -163,7 +202,11 @@ async function adminRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
     '/users/:id',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const userId = parseInt(request.params.id, 10);
+      const idResult = validateId(request.params.id);
+      if (!idResult.valid) {
+        return reply.code(400).send({ error: idResult.error });
+      }
+      const userId = idResult.value;
 
       try {
         const user = await prisma.user.findUnique({
@@ -210,9 +253,18 @@ async function adminRoutes(app: FastifyInstance) {
       request: FastifyRequest<{ Params: { id: string }; Body: UserUpdateBody }>,
       reply: FastifyReply
     ) => {
-      const userId = parseInt(request.params.id, 10);
+      const idResult = validateId(request.params.id);
+      if (!idResult.valid) {
+        return reply.code(400).send({ error: idResult.error });
+      }
+      const userId = idResult.value;
       const { role, isActive } = request.body;
       const adminUser = getUserFromToken(request);
+
+      // Validate role if provided
+      if (role !== undefined && role !== 'USER' && role !== 'ADMIN') {
+        return reply.code(400).send({ error: 'Invalid role. Must be USER or ADMIN' });
+      }
 
       try {
         // Prevent self-demotion
@@ -281,9 +333,10 @@ async function adminRoutes(app: FastifyInstance) {
       request: FastifyRequest<{ Querystring: PaginationQuery & { source?: string; status?: string } }>,
       reply: FastifyReply
     ) => {
-      const page = parseInt(request.query.page || '1', 10);
-      const limit = Math.min(parseInt(request.query.limit || '50', 10), 100);
-      const source = request.query.source;
+      const page = validatePositiveInt(request.query.page, 1, 10000);
+      const limit = validatePositiveInt(request.query.limit, 50, 100);
+      // Sanitize source input - only allow alphanumeric and underscore
+      const source = request.query.source?.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 50);
       const status = request.query.status;
 
       try {
@@ -331,7 +384,11 @@ async function adminRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
     '/webhooks/:id',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const webhookId = BigInt(request.params.id);
+      const idResult = validateBigIntId(request.params.id);
+      if (!idResult.valid) {
+        return reply.code(400).send({ error: idResult.error });
+      }
+      const webhookId = idResult.value;
 
       try {
         const webhook = await prisma.webhookLog.findUnique({
@@ -358,8 +415,8 @@ async function adminRoutes(app: FastifyInstance) {
   app.get<{ Querystring: PaginationQuery }>(
     '/consumers',
     async (request: FastifyRequest<{ Querystring: PaginationQuery }>, reply: FastifyReply) => {
-      const page = parseInt(request.query.page || '1', 10);
-      const limit = Math.min(parseInt(request.query.limit || '20', 10), 100);
+      const page = validatePositiveInt(request.query.page, 1, 10000);
+      const limit = validatePositiveInt(request.query.limit, 20, 100);
 
       try {
         const [consumers, total] = await Promise.all([
@@ -405,7 +462,11 @@ async function adminRoutes(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>(
     '/consumers/:id',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const consumerId = parseInt(request.params.id, 10);
+      const idResult = validateId(request.params.id);
+      if (!idResult.valid) {
+        return reply.code(400).send({ error: idResult.error });
+      }
+      const consumerId = idResult.value;
       const adminUser = getUserFromToken(request);
 
       try {
@@ -483,6 +544,24 @@ async function adminRoutes(app: FastifyInstance) {
       const { value, description } = request.body;
       const adminUser = getUserFromToken(request);
 
+      // Validate key format - alphanumeric, underscore, dot only
+      if (!/^[a-zA-Z0-9_.-]+$/.test(key) || key.length > 100) {
+        return reply.code(400).send({ error: 'Invalid setting key format' });
+      }
+
+      // Validate value
+      if (!value || typeof value !== 'string') {
+        return reply.code(400).send({ error: 'Setting value is required' });
+      }
+      if (value.length > MAX_SETTING_VALUE_LENGTH) {
+        return reply.code(400).send({ error: `Setting value exceeds maximum length of ${MAX_SETTING_VALUE_LENGTH}` });
+      }
+
+      // Validate description if provided
+      if (description && description.length > MAX_SETTING_DESCRIPTION_LENGTH) {
+        return reply.code(400).send({ error: `Description exceeds maximum length of ${MAX_SETTING_DESCRIPTION_LENGTH}` });
+      }
+
       try {
         const oldSetting = await prisma.systemSetting.findUnique({
           where: { key },
@@ -535,10 +614,19 @@ async function adminRoutes(app: FastifyInstance) {
       request: FastifyRequest<{ Querystring: PaginationQuery & { action?: string; userId?: string } }>,
       reply: FastifyReply
     ) => {
-      const page = parseInt(request.query.page || '1', 10);
-      const limit = Math.min(parseInt(request.query.limit || '50', 10), 100);
-      const action = request.query.action;
-      const userId = request.query.userId ? parseInt(request.query.userId, 10) : undefined;
+      const page = validatePositiveInt(request.query.page, 1, 10000);
+      const limit = validatePositiveInt(request.query.limit, 50, 100);
+      // Sanitize action input
+      const action = request.query.action?.replace(/[^a-zA-Z0-9_.-]/g, '').substring(0, 50) || undefined;
+      // Validate userId if provided
+      let userId: number | undefined;
+      if (request.query.userId) {
+        const userIdResult = validateId(request.query.userId);
+        if (!userIdResult.valid) {
+          return reply.code(400).send({ error: 'Invalid userId format' });
+        }
+        userId = userIdResult.value;
+      }
 
       try {
         const where: any = {};
@@ -579,7 +667,7 @@ async function adminRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { limit?: string } }>(
     '/dlq',
     async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
-      const limit = Math.min(parseInt(request.query.limit || '20', 10), 100);
+      const limit = validatePositiveInt(request.query.limit, 20, 100);
 
       try {
         const messages = await natsService.getDLQMessages(limit);
@@ -605,7 +693,11 @@ async function adminRoutes(app: FastifyInstance) {
   app.post<{ Params: { userId: string } }>(
     '/cache/invalidate/user/:userId',
     async (request: FastifyRequest<{ Params: { userId: string } }>, reply: FastifyReply) => {
-      const userId = parseInt(request.params.userId, 10);
+      const idResult = validateId(request.params.userId);
+      if (!idResult.valid) {
+        return reply.code(400).send({ error: idResult.error });
+      }
+      const userId = idResult.value;
       const adminUser = getUserFromToken(request);
 
       try {

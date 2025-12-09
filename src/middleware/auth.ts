@@ -1,18 +1,29 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { JWTPayload } from '../types';
+import { JWTPayload, JWTPayloadSchema } from '../types';
 import { prisma } from '../app';
 import { redisService } from '../services/redis';
+import { z } from 'zod';
 
-interface ExtendedJWTPayload extends JWTPayload {
-  jti?: string;
-  iat?: number;
-  type?: string;
-}
+// Extended JWT payload schema for access tokens
+const ExtendedJWTPayloadSchema = JWTPayloadSchema.extend({
+  jti: z.string().optional(),
+  iat: z.number().optional(),
+  type: z.enum(['access', 'refresh']).optional(),
+});
+
+// Type inferred from schema (used for validation)
 
 export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
-    const user = request.user as ExtendedJWTPayload;
+
+    // Runtime validation of JWT payload
+    const parseResult = ExtendedJWTPayloadSchema.safeParse(request.user);
+    if (!parseResult.success) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Invalid token format' });
+    }
+
+    const user = parseResult.data;
 
     // Check if token was issued before user's blacklist time
     const blacklistTime = await redisService.getUserTokenBlacklistTime(user.userId);
@@ -32,7 +43,14 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
 export async function authenticateAdmin(request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
-    const user = request.user as ExtendedJWTPayload;
+
+    // Runtime validation of JWT payload
+    const parseResult = ExtendedJWTPayloadSchema.safeParse(request.user);
+    if (!parseResult.success) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Invalid token format' });
+    }
+
+    const user = parseResult.data;
 
     // Check if token was issued before user's blacklist time
     const blacklistTime = await redisService.getUserTokenBlacklistTime(user.userId);
