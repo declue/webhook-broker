@@ -136,6 +136,27 @@ class RedisService {
     }
   }
 
+  // JWT Blacklist management
+  async blacklistToken(jti: string, expiresIn: number): Promise<void> {
+    // Store token ID in blacklist until it expires
+    await this.set(`blacklist:jwt:${jti}`, true, expiresIn);
+  }
+
+  async isTokenBlacklisted(jti: string): Promise<boolean> {
+    const result = await this.get<boolean>(`blacklist:jwt:${jti}`);
+    return result === true;
+  }
+
+  async blacklistUserTokens(userId: number): Promise<void> {
+    // Mark all tokens for this user as invalid
+    // This will be checked on token validation
+    await this.set(`blacklist:user:${userId}`, Date.now(), 7 * 24 * 60 * 60); // 7 days (max refresh token lifetime)
+  }
+
+  async getUserTokenBlacklistTime(userId: number): Promise<number | null> {
+    return await this.get<number>(`blacklist:user:${userId}`);
+  }
+
   isConnected(): boolean {
     return this.client !== null && this.client.status === 'ready';
   }

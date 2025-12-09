@@ -1,9 +1,15 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import crypto from 'crypto';
 import { config } from '../config';
 import { githubService } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
 import { encrypt, generateSecureState } from '../services/crypto';
+
+// Generate a unique JWT ID
+function generateJti(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
 
 interface CallbackQuery {
   code?: string;
@@ -133,6 +139,10 @@ async function authRoutes(app: FastifyInstance) {
             },
           });
         } else {
+          // Check if this is the first user - auto-promote to ADMIN
+          const userCount = await prisma.user.count();
+          const isFirstUser = userCount === 0;
+
           user = await prisma.user.create({
             data: {
               githubId: String(githubUser.id),
@@ -142,17 +152,26 @@ async function authRoutes(app: FastifyInstance) {
               accessToken: encryptedAccessToken,
               refreshToken: encryptedRefreshToken,
               tokenExpiresAt: expiresAt,
+              // First user becomes admin automatically
+              role: isFirstUser ? 'ADMIN' : 'USER',
             },
           });
+
+          if (isFirstUser) {
+            app.log.info(`First user ${githubUser.login} automatically promoted to ADMIN`);
+          }
         }
 
         // Sign JWT with shorter expiration for access token
+        const accessJti = generateJti();
         const jwtToken = app.jwt.sign(
           {
             userId: user.id,
             githubId: user.githubId,
             username: user.username,
             type: 'access',
+            jti: accessJti,
+            iat: Math.floor(Date.now() / 1000),
           },
           {
             expiresIn: config.jwt.accessExpiresIn,
@@ -160,11 +179,14 @@ async function authRoutes(app: FastifyInstance) {
         );
 
         // Generate refresh token with longer expiration
+        const refreshJti = generateJti();
         const refreshJwtToken = app.jwt.sign(
           {
             userId: user.id,
             githubId: user.githubId,
             type: 'refresh',
+            jti: refreshJti,
+            iat: Math.floor(Date.now() / 1000),
           },
           {
             expiresIn: config.jwt.refreshExpiresIn,
@@ -223,23 +245,30 @@ async function authRoutes(app: FastifyInstance) {
         return reply.code(401).send({ error: 'Invalid token type' });
       }
 
-      // Verify user still exists
+      // Verify user still exists and is active
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
-        select: { id: true, githubId: true, username: true },
+        select: { id: true, githubId: true, username: true, isActive: true },
       });
 
       if (!user) {
         return reply.code(401).send({ error: 'User not found' });
       }
 
+      if (!user.isActive) {
+        return reply.code(403).send({ error: 'Account is deactivated' });
+      }
+
       // Issue new access token
+      const newJti = generateJti();
       const newAccessToken = app.jwt.sign(
         {
           userId: user.id,
           githubId: user.githubId,
           username: user.username,
           type: 'access',
+          jti: newJti,
+          iat: Math.floor(Date.now() / 1000),
         },
         {
           expiresIn: config.jwt.accessExpiresIn,
@@ -287,14 +316,35 @@ async function authRoutes(app: FastifyInstance) {
    * POST /auth/logout
    */
   app.post('/logout', { onRequest: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { userId } = request.user as { userId: number };
+    const user = request.user as { userId: number; jti?: string; iat?: number };
+
+    // Blacklist all user tokens issued before now
+    await redisService.blacklistUserTokens(user.userId);
 
     // Invalidate user's cached permissions
-    await redisService.invalidateUserPermissions(userId);
+    await redisService.invalidateUserPermissions(user.userId);
 
-    app.log.info(`User logged out: ID ${userId}`);
+    app.log.info(`User logged out: ID ${user.userId}`);
 
     return reply.send({ message: 'Logged out successfully' });
+  });
+
+  /**
+   * Logout from all devices - invalidate all tokens
+   * POST /auth/logout-all
+   */
+  app.post('/logout-all', { onRequest: [authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user as { userId: number };
+
+    // Blacklist all user tokens
+    await redisService.blacklistUserTokens(user.userId);
+
+    // Invalidate user's cached permissions
+    await redisService.invalidateUserPermissions(user.userId);
+
+    app.log.info(`User logged out from all devices: ID ${user.userId}`);
+
+    return reply.send({ message: 'Logged out from all devices successfully' });
   });
 }
 

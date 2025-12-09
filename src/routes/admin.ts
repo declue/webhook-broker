@@ -20,7 +20,32 @@ interface PaginationQuery {
   search?: string;
 }
 
+// Admin-specific rate limit configuration
+const ADMIN_RATE_LIMIT = {
+  max: 30, // 30 requests per minute for admin endpoints
+  timeWindow: '1 minute',
+};
+
 async function adminRoutes(app: FastifyInstance) {
+  // Apply stricter rate limiting for admin routes
+  app.addHook('onRequest', async (request, reply) => {
+    // Rate limit key based on user ID from JWT
+    const user = request.user as { userId?: number } | undefined;
+    const key = `admin_rate_limit:${user?.userId || request.ip}`;
+
+    const current = await redisService.get<number>(key);
+    const count = (current || 0) + 1;
+
+    if (count > ADMIN_RATE_LIMIT.max) {
+      return reply.code(429).send({
+        error: 'Too Many Requests',
+        message: 'Admin API rate limit exceeded. Please try again later.',
+      });
+    }
+
+    await redisService.set(key, count, 60); // 60 seconds TTL
+  });
+
   // All admin routes require admin authentication
   app.addHook('onRequest', authenticateAdmin);
 
