@@ -5,6 +5,8 @@ import rateLimit from '@fastify/rate-limit';
 import helmet from '@fastify/helmet';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import fastifyStatic from '@fastify/static';
+import path from 'path';
 import { config, validateConfig } from './config';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -13,6 +15,7 @@ import { redisService } from './services/redis';
 import webhookRoutes from './routes/webhook';
 import authRoutes from './routes/auth';
 import messagesRoutes from './routes/messages';
+import adminRoutes from './routes/admin';
 import {
   register,
   httpRequestsTotal,
@@ -148,6 +151,19 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(webhookRoutes, { prefix: config.paths.webhookPrefix });
   await app.register(authRoutes, { prefix: `${config.paths.apiPrefix}/auth` });
   await app.register(messagesRoutes, { prefix: `${config.paths.apiPrefix}/messages` });
+  await app.register(adminRoutes, { prefix: `${config.paths.apiPrefix}/admin` });
+
+  // Serve admin dashboard static files
+  await app.register(fastifyStatic, {
+    root: path.join(__dirname, '..', 'public'),
+    prefix: '/admin/',
+    decorateReply: false,
+  });
+
+  // Admin dashboard route
+  app.get('/admin', async (_request, reply) => {
+    return reply.redirect('/admin/admin/index.html');
+  });
 
   // Simple health check for load balancers
   app.get('/health', async () => {

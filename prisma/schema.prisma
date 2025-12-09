@@ -6,6 +6,11 @@ datasource db {
   provider = "postgresql"
 }
 
+enum UserRole {
+  USER
+  ADMIN
+}
+
 model User {
   id             Int       @id @default(autoincrement())
   githubId       String    @unique @map("github_id")
@@ -15,6 +20,8 @@ model User {
   accessToken    String    @map("access_token") // Encrypted
   refreshToken   String?   @map("refresh_token") // Encrypted
   tokenExpiresAt DateTime? @map("token_expires_at")
+  role           UserRole  @default(USER)
+  isActive       Boolean   @default(true) @map("is_active")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
@@ -73,4 +80,34 @@ model WebhookLog {
   @@index([source])
   @@index([receivedAt])
   @@map("webhook_logs")
+}
+
+model SystemSetting {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  value       String
+  description String?
+  updatedBy   Int?     @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  action      String   // e.g., "user.update", "settings.change"
+  targetType  String?  @map("target_type") // e.g., "user", "repository"
+  targetId    String?  @map("target_id")
+  oldValue    Json?    @map("old_value")
+  newValue    Json?    @map("new_value")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
