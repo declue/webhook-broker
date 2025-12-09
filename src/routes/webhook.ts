@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { natsService } from '../services/nats';
 import { prisma } from '../app';
+import { config } from '../config';
 import { WebhookMessage } from '../types';
 import crypto from 'crypto';
 
@@ -41,14 +42,14 @@ async function webhookRoutes(app: FastifyInstance) {
 
         const source = detectWebhookSource(fullPath, headers);
 
-        if (source === 'github') {
-          const isValid = verifyGitHubSignature(
-            rawBody,
-            headers['x-hub-signature-256'] || headers['x-hub-signature']
-          );
-          if (!isValid && process.env.NODE_ENV === 'production') {
-            return reply.code(401).send({ error: 'Invalid signature' });
-          }
+        // Validate webhook signature based on source
+        const signatureValidation = validateWebhookSignature(source, rawBody, headers);
+        if (!signatureValidation.valid) {
+          app.log.warn(`Webhook signature validation failed for ${source}: ${signatureValidation.reason}`);
+          return reply.code(401).send({
+            error: 'Signature verification failed',
+            message: signatureValidation.reason,
+          });
         }
 
         const webhookMessage: WebhookMessage = {
@@ -96,14 +97,15 @@ async function webhookRoutes(app: FastifyInstance) {
             headers: {},
             payloadSize: 0,
             statusCode: 500,
-            errorMessage: error.message,
+            errorMessage: config.server.env === 'production' ? 'Internal error' : error.message,
             receivedAt: new Date(),
           },
         });
 
         return reply.code(500).send({
           error: 'Internal server error',
-          message: error.message,
+          // Don't expose internal error details in production
+          ...(config.server.env !== 'production' && { message: error.message }),
         });
       }
     }
@@ -129,25 +131,135 @@ function detectWebhookSource(path: string, headers: Record<string, string>): str
   return 'unknown';
 }
 
-function verifyGitHubSignature(payload: Buffer, signature?: string): boolean {
-  if (!signature) return false;
+interface SignatureValidationResult {
+  valid: boolean;
+  reason?: string;
+}
 
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  if (!secret) {
-    return true;
+/**
+ * Validates webhook signature based on source
+ * Returns validation result with reason if failed
+ */
+function validateWebhookSignature(
+  source: string,
+  payload: Buffer,
+  headers: Record<string, string>
+): SignatureValidationResult {
+  switch (source) {
+    case 'github':
+      return validateGitHubSignature(payload, headers);
+    case 'gitlab':
+      return validateGitLabSignature(headers);
+    case 'jira':
+      // Jira uses different authentication methods
+      return { valid: true };
+    default:
+      // Unknown sources - allow in development, reject in production
+      if (config.server.env === 'production') {
+        return { valid: false, reason: 'Unknown webhook source' };
+      }
+      return { valid: true };
+  }
+}
+
+/**
+ * Validates GitHub webhook signature using HMAC-SHA256
+ * @see https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
+ */
+function validateGitHubSignature(
+  payload: Buffer,
+  headers: Record<string, string>
+): SignatureValidationResult {
+  const signature = headers['x-hub-signature-256'] || headers['x-hub-signature'];
+  const secret = config.github.webhookSecret;
+
+  // In production, signature and secret are required
+  if (config.server.env === 'production') {
+    if (!secret) {
+      return { valid: false, reason: 'Webhook secret not configured' };
+    }
+    if (!signature) {
+      return { valid: false, reason: 'Missing signature header' };
+    }
+  } else {
+    // In development, warn but allow if not configured
+    if (!secret) {
+      console.warn('⚠️  Skipping GitHub signature verification: GITHUB_WEBHOOK_SECRET not set');
+      return { valid: true };
+    }
+    if (!signature) {
+      return { valid: false, reason: 'Missing signature header' };
+    }
   }
 
-  const algorithm = signature.startsWith('sha256=') ? 'sha256' : 'sha1';
+  // Determine algorithm from signature prefix
+  const isSha256 = signature.startsWith('sha256=');
+  const algorithm = isSha256 ? 'sha256' : 'sha1';
+
+  // Prefer SHA-256, warn if using SHA-1
+  if (!isSha256) {
+    console.warn('⚠️  Received SHA-1 signature. Consider configuring GitHub webhook to use SHA-256.');
+  }
+
+  // Extract the hex signature
   const expectedSignature = signature.replace(/^sha(1|256)=/, '');
 
+  // Calculate HMAC
   const hmac = crypto.createHmac(algorithm, secret);
   hmac.update(payload);
   const calculatedSignature = hmac.digest('hex');
 
-  return crypto.timingSafeEqual(
-    Buffer.from(expectedSignature),
-    Buffer.from(calculatedSignature)
-  );
+  // Use constant-time comparison to prevent timing attacks
+  try {
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(calculatedSignature, 'hex')
+    );
+
+    if (!isValid) {
+      return { valid: false, reason: 'Signature mismatch' };
+    }
+    return { valid: true };
+  } catch (error) {
+    // timingSafeEqual throws if buffers have different lengths
+    return { valid: false, reason: 'Invalid signature format' };
+  }
+}
+
+/**
+ * Validates GitLab webhook token
+ * @see https://docs.gitlab.com/ee/user/project/integrations/webhooks.html#validate-payloads-by-using-a-secret-token
+ */
+function validateGitLabSignature(headers: Record<string, string>): SignatureValidationResult {
+  const token = headers['x-gitlab-token'];
+  const secret = process.env.GITLAB_WEBHOOK_SECRET;
+
+  // If no secret configured, allow (but warn in production)
+  if (!secret) {
+    if (config.server.env === 'production') {
+      console.warn('⚠️  GITLAB_WEBHOOK_SECRET not set. Consider configuring it for security.');
+    }
+    return { valid: true };
+  }
+
+  if (!token) {
+    return { valid: false, reason: 'Missing X-Gitlab-Token header' };
+  }
+
+  // Use constant-time comparison
+  try {
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(token),
+      Buffer.from(secret)
+    );
+
+    if (!isValid) {
+      return { valid: false, reason: 'Token mismatch' };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, reason: 'Invalid token format' };
+  }
 }
 
 export default webhookRoutes;
