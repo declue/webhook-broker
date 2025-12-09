@@ -132,8 +132,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   // CSRF token generation endpoint
-  app.get('/api/v1/csrf-token', async (request, reply) => {
-    const token = await reply.generateCsrf();
+  app.get('/api/v1/csrf-token', async (_request, reply) => {
+    const token = await (reply as any).generateCsrf();
     return { csrfToken: token };
   });
 
@@ -205,7 +205,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
 
     // Check for JWT token in cookie or Authorization header
-    const token = request.cookies?.token ||
+    const token = (request as any).cookies?.token ||
       (request.headers.authorization?.startsWith('Bearer ')
         ? request.headers.authorization.substring(7)
         : null);

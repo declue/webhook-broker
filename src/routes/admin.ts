@@ -39,10 +39,10 @@ const SENSITIVE_FIELDS = [
  * Redacts sensitive fields from an object for audit logging
  * Prevents accidental exposure of tokens, passwords, etc.
  */
-function redactSensitiveData<T extends Record<string, any>>(data: T): T {
+function redactSensitiveData(data: Record<string, any>): Record<string, any> {
   if (!data || typeof data !== 'object') return data;
 
-  const redacted = { ...data };
+  const redacted: Record<string, any> = { ...data };
   for (const key of Object.keys(redacted)) {
     const lowerKey = key.toLowerCase();
     if (SENSITIVE_FIELDS.some(field => lowerKey.includes(field.toLowerCase()))) {
