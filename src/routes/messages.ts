@@ -4,6 +4,7 @@ import { natsService } from '../services/nats';
 import { githubService } from '../services/github';
 import { redisService } from '../services/redis';
 import { prisma } from '../app';
+import { config } from '../config';
 import { PullMessagesResponse } from '../types';
 import { decrypt } from '../services/crypto';
 
@@ -169,7 +170,8 @@ async function messagesRoutes(app: FastifyInstance) {
         app.log.error('Pull messages error:', error);
         return reply.code(500).send({
           error: 'Failed to pull messages',
-          message: error.message,
+          // Don't expose internal error details in production
+          ...(config.server.env !== 'production' && { message: error.message }),
         });
       }
     }
@@ -224,7 +226,8 @@ async function messagesRoutes(app: FastifyInstance) {
         app.log.error('Ack messages error:', error);
         return reply.code(500).send({
           error: 'Failed to acknowledge messages',
-          message: error.message,
+          // Don't expose internal error details in production
+          ...(config.server.env !== 'production' && { message: error.message }),
         });
       }
     }
@@ -261,7 +264,8 @@ async function messagesRoutes(app: FastifyInstance) {
         app.log.error('Get stats error:', error);
         return reply.code(500).send({
           error: 'Failed to get stats',
-          message: error.message,
+          // Don't expose internal error details in production
+          ...(config.server.env !== 'production' && { message: error.message }),
         });
       }
     }
