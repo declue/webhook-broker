@@ -97,46 +97,48 @@ export async function buildApp(): Promise<FastifyInstance> {
     secret: config.jwt.secret,
   });
 
-  // Swagger documentation
-  await app.register(swagger, {
-    openapi: {
-      openapi: '3.0.0',
-      info: {
-        title: 'Webhook Broker API',
-        description: 'GitHub Webhook Broker with NATS JetStream - API Documentation',
-        version: '1.0.0',
-      },
-      servers: [
-        {
-          url: `http://localhost:${config.server.port}`,
-          description: 'Development server',
+  // Swagger documentation - only enabled in development
+  if (config.server.env !== 'production') {
+    await app.register(swagger, {
+      openapi: {
+        openapi: '3.0.0',
+        info: {
+          title: 'Webhook Broker API',
+          description: 'GitHub Webhook Broker with NATS JetStream - API Documentation',
+          version: '1.0.0',
         },
-      ],
-      components: {
-        securitySchemes: {
-          bearerAuth: {
-            type: 'http',
-            scheme: 'bearer',
-            bearerFormat: 'JWT',
+        servers: [
+          {
+            url: `http://localhost:${config.server.port}`,
+            description: 'Development server',
+          },
+        ],
+        components: {
+          securitySchemes: {
+            bearerAuth: {
+              type: 'http',
+              scheme: 'bearer',
+              bearerFormat: 'JWT',
+            },
           },
         },
+        tags: [
+          { name: 'Auth', description: 'Authentication endpoints' },
+          { name: 'Messages', description: 'Message pull and acknowledgment' },
+          { name: 'Webhook', description: 'Webhook receiver endpoints' },
+          { name: 'Health', description: 'Health check endpoints' },
+        ],
       },
-      tags: [
-        { name: 'Auth', description: 'Authentication endpoints' },
-        { name: 'Messages', description: 'Message pull and acknowledgment' },
-        { name: 'Webhook', description: 'Webhook receiver endpoints' },
-        { name: 'Health', description: 'Health check endpoints' },
-      ],
-    },
-  });
+    });
 
-  await app.register(swaggerUi, {
-    routePrefix: '/docs',
-    uiConfig: {
-      docExpansion: 'list',
-      deepLinking: true,
-    },
-  });
+    await app.register(swaggerUi, {
+      routePrefix: '/docs',
+      uiConfig: {
+        docExpansion: 'list',
+        deepLinking: true,
+      },
+    });
+  }
 
   // Initialize services
   await natsService.connect();
@@ -201,8 +203,33 @@ export async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
-  // Prometheus metrics endpoint
-  app.get('/metrics', async (_request, reply) => {
+  // Prometheus metrics endpoint - protected in production
+  app.get('/metrics', async (request, reply) => {
+    // In production, only allow access from internal networks or with valid token
+    if (config.server.env === 'production') {
+      const metricsToken = process.env.METRICS_TOKEN;
+      const authHeader = request.headers.authorization;
+
+      // If METRICS_TOKEN is set, require Bearer token authentication
+      if (metricsToken) {
+        if (!authHeader || authHeader !== `Bearer ${metricsToken}`) {
+          return reply.code(401).send({ error: 'Unauthorized' });
+        }
+      } else {
+        // If no token configured, only allow from localhost/internal IPs
+        const clientIp = request.ip;
+        const isInternal = clientIp === '127.0.0.1' ||
+          clientIp === '::1' ||
+          clientIp.startsWith('10.') ||
+          clientIp.startsWith('172.') ||
+          clientIp.startsWith('192.168.');
+
+        if (!isInternal) {
+          return reply.code(403).send({ error: 'Forbidden' });
+        }
+      }
+    }
+
     reply.header('Content-Type', register.contentType);
     return register.metrics();
   });
