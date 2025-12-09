@@ -65,6 +65,9 @@ const ADMIN_RATE_LIMIT = {
   timeWindow: '1 minute',
 };
 
+// Methods that require CSRF protection (state-changing operations)
+const CSRF_PROTECTED_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
 async function adminRoutes(app: FastifyInstance) {
   // Apply stricter rate limiting for admin routes
   app.addHook('onRequest', async (request, reply) => {
@@ -87,6 +90,20 @@ async function adminRoutes(app: FastifyInstance) {
 
   // All admin routes require admin authentication
   app.addHook('onRequest', authenticateAdmin);
+
+  // CSRF protection for state-changing requests
+  app.addHook('onRequest', async (request, reply) => {
+    if (CSRF_PROTECTED_METHODS.includes(request.method)) {
+      try {
+        await (request as any).csrfVerify();
+      } catch (err) {
+        return reply.code(403).send({
+          error: 'Forbidden',
+          message: 'Invalid or missing CSRF token',
+        });
+      }
+    }
+  });
 
   // ==================== Dashboard Stats ====================
 

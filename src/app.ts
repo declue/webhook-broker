@@ -6,6 +6,8 @@ import helmet from '@fastify/helmet';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import fastifyStatic from '@fastify/static';
+import fastifyCookie from '@fastify/cookie';
+import csrfProtection from '@fastify/csrf-protection';
 import path from 'path';
 import { config, validateConfig } from './config';
 import { PrismaClient } from '@prisma/client';
@@ -73,12 +75,12 @@ export async function buildApp(): Promise<FastifyInstance> {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   });
 
-  // Rate limiting
+  // Rate limiting with Redis for distributed environments
   await app.register(rateLimit, {
     max: config.security.rateLimit.max,
     timeWindow: config.security.rateLimit.timeWindow,
     // Use Redis for distributed rate limiting in production
-    // redis: redisService.getClient(),
+    redis: redisService.getClient(),
     keyGenerator: (request) => {
       // Use user ID if authenticated, otherwise use IP
       const user = request.user as { userId?: number } | undefined;
@@ -98,6 +100,35 @@ export async function buildApp(): Promise<FastifyInstance> {
   // JWT
   await app.register(jwt, {
     secret: config.jwt.secret,
+  });
+
+  // Cookie support for admin dashboard auth and CSRF
+  await app.register(fastifyCookie, {
+    secret: config.jwt.secret, // Sign cookies
+    parseOptions: {
+      httpOnly: true,
+      secure: config.server.env === 'production',
+      sameSite: 'strict',
+    },
+  });
+
+  // CSRF protection for state-changing requests
+  await app.register(csrfProtection, {
+    sessionPlugin: '@fastify/cookie',
+    cookieOpts: {
+      httpOnly: true,
+      secure: config.server.env === 'production',
+      sameSite: 'strict',
+      path: '/',
+    },
+    // Generate CSRF token endpoint
+    getToken: (request) => request.headers['x-csrf-token'] as string,
+  });
+
+  // CSRF token generation endpoint
+  app.get('/api/v1/csrf-token', async (request, reply) => {
+    const token = await reply.generateCsrf();
+    return { csrfToken: token };
   });
 
   // Swagger documentation - only enabled in development
@@ -153,11 +184,58 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(messagesRoutes, { prefix: `${config.paths.apiPrefix}/messages` });
   await app.register(adminRoutes, { prefix: `${config.paths.apiPrefix}/admin` });
 
-  // Serve admin dashboard static files
+  // Serve admin dashboard static files - protected by JWT authentication
   await app.register(fastifyStatic, {
     root: path.join(__dirname, '..', 'public'),
     prefix: '/admin/',
     decorateReply: false,
+  });
+
+  // Admin dashboard authentication middleware
+  app.addHook('onRequest', async (request, reply) => {
+    // Only protect /admin/* routes (static dashboard files)
+    if (!request.url.startsWith('/admin')) {
+      return;
+    }
+
+    // Check for JWT token in cookie or Authorization header
+    const token = request.cookies?.token ||
+      (request.headers.authorization?.startsWith('Bearer ')
+        ? request.headers.authorization.substring(7)
+        : null);
+
+    if (!token) {
+      // Redirect to login page or return 401
+      return reply.code(401).send({
+        error: 'Unauthorized',
+        message: 'Admin dashboard requires authentication. Please login first.'
+      });
+    }
+
+    try {
+      const decoded = app.jwt.verify(token) as { userId: number; type?: string };
+
+      // Verify it's an access token
+      if (decoded.type && decoded.type !== 'access') {
+        return reply.code(401).send({ error: 'Invalid token type' });
+      }
+
+      // Check if user is admin
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+        select: { role: true, isActive: true },
+      });
+
+      if (!user || !user.isActive) {
+        return reply.code(401).send({ error: 'User not found or inactive' });
+      }
+
+      if (user.role !== 'ADMIN') {
+        return reply.code(403).send({ error: 'Admin access required' });
+      }
+    } catch (err) {
+      return reply.code(401).send({ error: 'Invalid or expired token' });
+    }
   });
 
   // Admin dashboard route

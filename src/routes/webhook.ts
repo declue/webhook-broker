@@ -13,8 +13,17 @@ interface WebhookParams {
   '*': string;
 }
 
+// Maximum payload size: 1MB
+const MAX_PAYLOAD_SIZE = 1 * 1024 * 1024;
+
 async function webhookRoutes(app: FastifyInstance) {
   app.addContentTypeParser('*', { parseAs: 'buffer' }, async (_req: FastifyRequest, payload: Buffer) => {
+    // Enforce payload size limit to prevent DoS
+    if (payload.length > MAX_PAYLOAD_SIZE) {
+      const error = new Error(`Payload too large. Maximum size is ${MAX_PAYLOAD_SIZE} bytes`);
+      (error as any).statusCode = 413;
+      throw error;
+    }
     return payload;
   });
 
@@ -161,8 +170,7 @@ function validateWebhookSignature(
     case 'gitlab':
       return validateGitLabSignature(headers);
     case 'jira':
-      // Jira uses different authentication methods
-      return { valid: true };
+      return validateJiraSignature(payload, headers);
     default:
       // Unknown sources - allow in development, reject in production
       if (config.server.env === 'production') {
@@ -232,6 +240,60 @@ function validateGitHubSignature(
     return { valid: true };
   } catch (error) {
     // timingSafeEqual throws if buffers have different lengths
+    return { valid: false, reason: 'Invalid signature format' };
+  }
+}
+
+/**
+ * Validates Jira webhook signature using HMAC-SHA256
+ * @see https://developer.atlassian.com/cloud/jira/platform/webhooks/#verify-a-webhook
+ */
+function validateJiraSignature(
+  payload: Buffer,
+  headers: Record<string, string>
+): SignatureValidationResult {
+  const signature = headers['x-hub-signature'] || headers['x-atlassian-signature'];
+  const secret = config.jira?.webhookSecret || process.env.JIRA_WEBHOOK_SECRET || '';
+
+  // In production, secret is required
+  if (config.server.env === 'production') {
+    if (!secret) {
+      return { valid: false, reason: 'Jira webhook secret not configured' };
+    }
+    if (!signature) {
+      return { valid: false, reason: 'Missing Jira signature header' };
+    }
+  } else {
+    // In development, warn but allow if not configured
+    if (!secret) {
+      console.warn('⚠️  Skipping Jira signature verification: JIRA_WEBHOOK_SECRET not set');
+      return { valid: true };
+    }
+    if (!signature) {
+      return { valid: false, reason: 'Missing Jira signature header' };
+    }
+  }
+
+  // Extract the hex signature (format: sha256=<signature>)
+  const expectedSignature = signature.replace(/^sha256=/, '');
+
+  // Calculate HMAC-SHA256
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(payload);
+  const calculatedSignature = hmac.digest('hex');
+
+  // Use constant-time comparison to prevent timing attacks
+  try {
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(calculatedSignature, 'hex')
+    );
+
+    if (!isValid) {
+      return { valid: false, reason: 'Signature mismatch' };
+    }
+    return { valid: true };
+  } catch {
     return { valid: false, reason: 'Invalid signature format' };
   }
 }

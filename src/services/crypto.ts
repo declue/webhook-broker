@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import { config } from '../config';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
@@ -7,11 +6,32 @@ const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 32;
 
 /**
- * Derives a 256-bit key from the JWT secret using PBKDF2
+ * Gets the encryption key from environment variable
+ * In production, ENCRYPTION_KEY must be set (validated in config.ts)
+ * Falls back to derived key from JWT_SECRET for backwards compatibility in development
+ */
+function getEncryptionKey(): string {
+  const encryptionKey = process.env.ENCRYPTION_KEY;
+  if (encryptionKey) {
+    return encryptionKey;
+  }
+
+  // Fallback for development - derive from JWT_SECRET (deprecated)
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn('⚠️  ENCRYPTION_KEY not set. Using JWT_SECRET derivation (deprecated).');
+    return process.env.JWT_SECRET || 'your-super-secret-jwt-key';
+  }
+
+  throw new Error('ENCRYPTION_KEY environment variable is required in production');
+}
+
+/**
+ * Derives a 256-bit key using PBKDF2
+ * Uses dedicated ENCRYPTION_KEY instead of JWT secret for proper key separation
  */
 function deriveKey(salt: Buffer): Buffer {
   return crypto.pbkdf2Sync(
-    config.jwt.secret,
+    getEncryptionKey(),
     salt,
     100000, // iterations
     32, // key length

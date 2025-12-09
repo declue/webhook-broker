@@ -54,6 +54,9 @@ export const config = {
   gitlab: {
     webhookSecret: process.env.GITLAB_WEBHOOK_SECRET || '',
   },
+  jira: {
+    webhookSecret: process.env.JIRA_WEBHOOK_SECRET || '',
+  },
 };
 
 export function validateConfig() {
